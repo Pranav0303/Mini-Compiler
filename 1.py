@@ -1,250 +1,238 @@
-import streamlit as st
+#include <iostream>
+#include <sstream>
+#include <vector>
+#include <unordered_map>
+using namespace std;
 
-KEYWORDS = {
-    "agar": "IF",
-    "warna": "ELSE",
-    "jabtak": "WHILE",
-    "printKaro": "PRINT",
-    "lo": "DECLARE",
-    "barabar": "ASSIGN"
+// ---------------- TOKEN ----------------
+class Token {
+public:
+    string type, value;
+    Token(string t, string v) : type(t), value(v) {}
+};
+
+// ---------------- LEXER ----------------
+unordered_map<string, string> KEYWORDS = {
+    {"agar","IF"}, {"warna","ELSE"}, {"printKaro","PRINT"},
+    {"lo","DECLARE"}, {"barabar","ASSIGN"}
+};
+
+class Lexer {
+public:
+    string code;
+    Lexer(string c) : code(c) {}
+
+    vector<Token> tokenize() {
+        vector<Token> tokens;
+        stringstream ss(code);
+        string word;
+
+        while (ss >> word) {
+            if (KEYWORDS.count(word))
+                tokens.push_back(Token(KEYWORDS[word], word));
+            else if (isdigit(word[0]))
+                tokens.push_back(Token("NUMBER", word));
+            else
+                tokens.push_back(Token("IDENTIFIER", word));
+        }
+        return tokens;
+    }
+};
+
+// ---------------- AST ----------------
+class Node {
+public:
+    virtual ~Node() {}
+};
+
+class Assignment : public Node {
+public:
+    string var, value;
+    Assignment(string v, string val) : var(v), value(val) {}
+};
+
+class Print : public Node {
+public:
+    string value;
+    Print(string v) : value(v) {}
+};
+
+class IfElse : public Node {
+public:
+    string condition;
+    vector<Node*> if_body, else_body;
+
+    IfElse(string cond) : condition(cond) {}
+};
+
+// ---------------- PARSER ----------------
+class Parser {
+public:
+    vector<Token> tokens;
+    int pos = 0;
+
+    Parser(vector<Token> t) : tokens(t) {}
+
+    Token current() {
+        if (pos < tokens.size()) return tokens[pos];
+        return Token("EOF", "");
+    }
+
+    Token eat(string type) {
+        Token tok = current();
+        if (tok.type == type) {
+            pos++;
+            return tok;
+        }
+        throw runtime_error("Syntax Error");
+    }
+
+    Node* statement() {
+        Token tok = current();
+
+        if (tok.type == "DECLARE") return assignment();
+        if (tok.type == "PRINT") return print_stmt();
+        if (tok.type == "IF") return if_stmt();
+
+        throw runtime_error("Invalid statement");
+    }
+
+    Node* assignment() {
+        eat("DECLARE");
+        string var = eat("IDENTIFIER").value;
+        eat("ASSIGN");
+        string val = eat("NUMBER").value;
+        return new Assignment(var, val);
+    }
+
+    Node* print_stmt() {
+        eat("PRINT");
+        string val = eat("IDENTIFIER").value;
+        return new Print(val);
+    }
+
+    Node* if_stmt() {
+        eat("IF");
+        string cond = eat("IDENTIFIER").value;
+
+        IfElse* node = new IfElse(cond);
+
+        // skip {
+        pos++;
+
+        while (current().value != "}") {
+            node->if_body.push_back(statement());
+        }
+        pos++; // skip }
+
+        if (current().type == "ELSE") {
+            eat("ELSE");
+            pos++; // skip {
+
+            while (current().value != "}") {
+                node->else_body.push_back(statement());
+            }
+            pos++; // skip }
+        }
+
+        return node;
+    }
+
+    vector<Node*> parse() {
+        vector<Node*> stmts;
+        while (pos < tokens.size()) {
+            stmts.push_back(statement());
+        }
+        return stmts;
+    }
+};
+
+// ---------------- SEMANTIC ----------------
+class Semantic {
+public:
+    unordered_map<string, int> table;
+
+    void visit(Node* node) {
+        if (auto a = dynamic_cast<Assignment*>(node)) {
+            table[a->var] = stoi(a->value);
+        }
+        else if (auto p = dynamic_cast<Print*>(node)) {
+            if (!table.count(p->value))
+                throw runtime_error("Semantic Error: Undeclared variable " + p->value);
+        }
+        else if (auto i = dynamic_cast<IfElse*>(node)) {
+            if (!table.count(i->condition))
+                throw runtime_error("Semantic Error: Condition variable not declared");
+
+            for (auto stmt : i->if_body) visit(stmt);
+            for (auto stmt : i->else_body) visit(stmt);
+        }
+    }
+};
+
+// ---------------- TAC ----------------
+class TAC {
+public:
+    vector<string> code;
+
+    void visit(Node* node) {
+        if (auto a = dynamic_cast<Assignment*>(node)) {
+            code.push_back(a->var + " = " + a->value);
+        }
+        else if (auto p = dynamic_cast<Print*>(node)) {
+            code.push_back("print " + p->value);
+        }
+        else if (auto i = dynamic_cast<IfElse*>(node)) {
+            code.push_back("if " + i->condition + " goto L1");
+
+            for (auto stmt : i->else_body) visit(stmt);
+
+            code.push_back("goto L2");
+            code.push_back("L1:");
+
+            for (auto stmt : i->if_body) visit(stmt);
+
+            code.push_back("L2:");
+        }
+    }
+};
+
+// ---------------- MAIN ----------------
+int main() {
+    string input, line;
+
+    while (getline(cin, line)) {
+        input += line + " ";
+    }
+
+    try {
+        Lexer lex(input);
+        auto tokens = lex.tokenize();
+
+        cout << "TOKENS:\n";
+        for (auto &t : tokens)
+            cout << t.type << ":" << t.value << "\n";
+
+        Parser parser(tokens);
+        auto ast = parser.parse();
+
+        Semantic sem;
+        for (auto stmt : ast) sem.visit(stmt);
+
+        cout << "\nSYMBOL TABLE:\n";
+        for (auto &p : sem.table)
+            cout << p.first << " = " << p.second << "\n";
+
+        TAC tac;
+        for (auto stmt : ast) tac.visit(stmt);
+
+        cout << "\nTAC:\n";
+        for (auto &line : tac.code)
+            cout << line << "\n";
+    }
+    catch (exception &e) {
+        cout << e.what() << endl;
+    }
+
+    return 0;
 }
-
-OPERATORS = {
-    "+": "PLUS",
-    "-": "MINUS",
-    "*": "MUL",
-    "/": "DIV",
-    ">": "GT",
-    "<": "LT",
-    "==": "EQ"
-}
-
-SYMBOLS = {
-    "(": "LPAREN",
-    ")": "RPAREN",
-    "{": "LBRACE",
-    "}": "RBRACE"
-}
-
-class Token:
-    def __init__(self, type_, value):
-        self.type = type_
-        self.value = value
-
-    def __repr__(self):
-        return f"{self.type}:{self.value}"
-
-class Lexer:
-    def __init__(self, code):
-        self.code = code
-
-    def tokenize(self):
-        tokens = []
-        words = self.code.replace("\n", " ").split()
-
-        for word in words:
-            if word in KEYWORDS:
-                tokens.append(Token(KEYWORDS[word], word))
-            elif word in OPERATORS:
-                tokens.append(Token(OPERATORS[word], word))
-            elif word in SYMBOLS:
-                tokens.append(Token(SYMBOLS[word], word))
-            elif word.isdigit():
-                tokens.append(Token("NUMBER", int(word)))
-            elif word.isidentifier():
-                tokens.append(Token("IDENTIFIER", word))
-            else:
-                raise Exception(f"Lexical Error: Unknown token '{word}'")
-
-        return tokens
-
-class Program:
-    def __init__(self, statements):
-        self.statements = statements
-
-class Assignment:
-    def __init__(self, var, value):
-        self.var = var
-        self.value = value
-
-    def __repr__(self):
-        return f"{self.var} = {self.value}"
-
-class Print:
-    def __init__(self, value):
-        self.value = value
-
-    def __repr__(self):
-        return f"print({self.value})"
-
-class IfElse:
-    def __init__(self, condition, if_body, else_body):
-        self.condition = condition
-        self.if_body = if_body
-        self.else_body = else_body
-
-    def __repr__(self):
-        return f"if {self.condition} then {self.if_body} else {self.else_body}"
-
-class Parser:
-    def __init__(self, tokens):
-        self.tokens = tokens
-        self.pos = 0
-
-    def current(self):
-        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
-
-    def eat(self, type_):
-        token = self.current()
-        if token and token.type == type_:
-            self.pos += 1
-            return token
-        else:
-            raise Exception(f"Syntax Error: Expected {type_}, got {token}")
-
-    def parse(self):
-        statements = []
-        while self.current():
-            statements.append(self.statement())
-        return Program(statements)
-
-    def statement(self):
-        token = self.current()
-
-        if token.type == "DECLARE":
-            return self.assignment()
-        elif token.type == "PRINT":
-            return self.print_stmt()
-        elif token.type == "IF":
-            return self.if_statement()
-        else:
-            raise Exception(f"Syntax Error: Invalid statement {token}")
-
-    def assignment(self):
-        self.eat("DECLARE")
-        var = self.eat("IDENTIFIER").value
-        self.eat("ASSIGN")
-        value = self.eat("NUMBER").value
-        return Assignment(var, value)
-
-    def print_stmt(self):
-        self.eat("PRINT")
-        value = self.eat("IDENTIFIER").value
-        return Print(value)
-
-    def if_statement(self):
-        self.eat("IF")
-        condition = self.eat("IDENTIFIER").value
-
-        self.eat("LBRACE")
-        if_body = []
-        while self.current() and self.current().type != "RBRACE":
-            if_body.append(self.statement())
-        self.eat("RBRACE")
-
-        else_body = []
-        if self.current() and self.current().type == "ELSE":
-            self.eat("ELSE")
-            self.eat("LBRACE")
-
-            while self.current() and self.current().type != "RBRACE":
-                else_body.append(self.statement())
-            self.eat("RBRACE")
-
-        return IfElse(condition, if_body, else_body)
-
-class SemanticAnalyzer:
-    def __init__(self):
-        self.symbol_table = {}
-
-    def analyze(self, ast):
-        for stmt in ast.statements:
-            self.visit(stmt)
-
-    def visit(self, node):
-        if isinstance(node, Assignment):
-            self.symbol_table[node.var] = node.value
-
-        elif isinstance(node, Print):
-            if node.value not in self.symbol_table:
-                raise Exception(f"Semantic Error: Variable '{node.value}' not declared")
-
-        elif isinstance(node, IfElse):
-            if node.condition not in self.symbol_table:
-                raise Exception(f"Semantic Error: Variable '{node.condition}' not declared")
-
-            for stmt in node.if_body:
-                self.visit(stmt)
-
-            for stmt in node.else_body:
-                self.visit(stmt)
-
-    def get_table(self):
-        return self.symbol_table
-
-class TACGenerator:
-    def __init__(self):
-        self.code = []
-
-    def generate(self, ast):
-        for stmt in ast.statements:
-            self.visit(stmt)
-        return self.code
-
-    def visit(self, node):
-        if isinstance(node, Assignment):
-            self.code.append(f"{node.var} = {node.value}")
-
-        elif isinstance(node, Print):
-            self.code.append(f"print {node.value}")
-
-        elif isinstance(node, IfElse):
-            self.code.append(f"if {node.condition} goto L1")
-
-            for stmt in node.else_body:
-                self.visit(stmt)
-
-            self.code.append("goto L2")
-            self.code.append("L1:")
-
-            for stmt in node.if_body:
-                self.visit(stmt)
-
-            self.code.append("L2:")
-
-st.set_page_config(page_title="Hinglish Compiler", layout="centered")
-
-st.title("HinglishLang Mini Compiler")
-st.write("Enter Hinglish code below and run the compiler")
-
-code = st.text_area("Hinglish Code", height=200)
-
-if st.button("Run Compiler"):
-    try:
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-
-        st.subheader("Tokens")
-        st.write(tokens)
-
-        parser = Parser(tokens)
-        ast = parser.parse()
-
-        st.subheader("AST")
-        st.write(ast.statements)
-
-        semantic = SemanticAnalyzer()
-        semantic.analyze(ast)
-
-        st.subheader("Symbol Table")
-        st.write(semantic.get_table())
-
-        tac = TACGenerator()
-        code_out = tac.generate(ast)
-
-        st.subheader("Intermediate Code")
-        for line in code_out:
-            st.code(line)
-
-    except Exception as e:
-        st.error(str(e))
